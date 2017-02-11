@@ -54,7 +54,8 @@ def _bytes_feature(value):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=value))
 
 
-def _convert_to_example(image_example, image_buffer, height, width):
+def _convert_to_example(image_example, image_buffer, height, width, colorspace='RGB',
+                        channels=3, image_format='JPEG'):
     """Build an Example proto for an example.
     Args:
       image_example: dict, an image example
@@ -69,13 +70,11 @@ def _convert_to_example(image_example, image_buffer, height, width):
     filename = str(image_example['filename'])
     image_id = str(image_example['id'])
 
-    # Not required
-    fileurl = str(image_example.get('fileurl', ''))
-
     # Class label for the whole image
     image_class = image_example.get('class', {})
     class_label = image_class.get('label', 0)
     class_text = str(image_class.get('text', ''))
+    class_conf = image_class.get('conf', 1.)
 
     # Objects
     image_objects = image_example.get('object', {})
@@ -87,9 +86,10 @@ def _convert_to_example(image_example, image_buffer, height, width):
     xmax = image_bboxes.get('xmax', [])
     ymin = image_bboxes.get('ymin', [])
     ymax = image_bboxes.get('ymax', [])
-    bbox_labels = image_bboxes.get('label', [])
     bbox_scores = image_bboxes.get('score', [])
+    bbox_labels = image_bboxes.get('label', [])
     bbox_text = map(str, image_bboxes.get('text', []))
+    bbox_label_confs = image_bboxes.get('conf', [])
 
     # Parts
     image_parts = image_objects.get('parts', {})
@@ -107,10 +107,6 @@ def _convert_to_example(image_example, image_buffer, height, width):
     # Any extra data (e.g. stringified json)
     extra_info = str(image_class.get('extra', ''))
 
-    colorspace = 'RGB'
-    channels = 3
-    image_format = 'JPEG'
-
     example = tf.train.Example(features=tf.train.Features(feature={
         'image/height': _int64_feature(height),
         'image/width': _int64_feature(width),
@@ -118,18 +114,19 @@ def _convert_to_example(image_example, image_buffer, height, width):
         'image/channels': _int64_feature(channels),
         'image/format': _bytes_feature(image_format),
         'image/filename': _bytes_feature(filename),
-        'image/fileurl': _bytes_feature(fileurl),
         'image/id': _bytes_feature(image_id),
         'image/encoded': _bytes_feature(image_buffer),
         'image/extra': _bytes_feature(extra_info),
         'image/class/label': _int64_feature(class_label),
         'image/class/text': _bytes_feature(class_text),
+        'image/class/conf': _float_feature(class_conf),
         'image/object/bbox/xmin': _float_feature(xmin),
         'image/object/bbox/xmax': _float_feature(xmax),
         'image/object/bbox/ymin': _float_feature(ymin),
         'image/object/bbox/ymax': _float_feature(ymax),
         'image/object/bbox/label': _int64_feature(bbox_labels),
         'image/object/bbox/text': _bytes_feature(bbox_text),
+        'image/object/bbox/conf': _float_feature(bbox_label_confs),
         'image/object/bbox/score' : _float_feature(bbox_scores),
         'image/object/parts/x' : _float_feature(parts_x),
         'image/object/parts/y' : _float_feature(parts_y),
@@ -168,7 +165,7 @@ class ImageCoder(object):
         image = self._sess.run(self._decode_jpeg,
                                feed_dict={self._decode_jpeg_data: image_data})
         assert len(image.shape) == 3, "JPEG needs to have height x width x channels"
-        assert image.shape[2] == 3, "JPEG needs to have 3 channels"
+        assert image.shape[2] == 3, "JPEG needs to have 3 channels (RGB)"
         return image
 
 def _is_png(filename):
@@ -179,7 +176,7 @@ def _is_png(filename):
       boolean indicating if the image is a PNG.
     """
     _, file_extension = os.path.splitext(filename)
-    return file_extension == '.png'
+    return file_extension.lower() == '.png'
 
 def _process_image(filename, coder):
     """Process a single image file.
@@ -196,8 +193,6 @@ def _process_image(filename, coder):
 
     # Clean the dirty data.
     if _is_png(filename):
-        # 1 image is a PNG.
-        #print('Converting PNG to JPEG for %s' % filename)
         image_data = coder.png_to_jpeg(image_data)
 
     # Decode the RGB JPEG.
@@ -256,9 +251,22 @@ def _process_image_files_batch(coder, thread_index, ranges, name, output_directo
             filename = str(image_example['filename'])
 
             try:
-                image_buffer, height, width = _process_image(filename, coder)
+                if 'encoded' in image_example:
+                    image_buffer = image_example['encoded']
+                    height = image_example['height']
+                    width = image_example['width']
+                    colorspace = image_example['colorspace']
+                    image_format = image_example['format']
+                    num_channels = image_example['channels']
+                    example = _convert_to_example(image_example, image_buffer, height,
+                                                  width, colorspace, num_channels,
+                                                  image_format)
 
-                example = _convert_to_example(image_example, image_buffer, height, width)
+                else:
+                    image_buffer, height, width = _process_image(filename, coder)
+                    example = _convert_to_example(image_example, image_buffer, height,
+                                                  width)
+
                 writer.write(example.SerializeToString())
                 shard_counter += 1
                 counter += 1
