@@ -134,7 +134,7 @@ def _convert_to_example(image_example, image_buffer, height, width, colorspace='
         'image/object/parts/score' : _float_feature(parts_s),
         'image/object/count' : _int64_feature(object_count),
         'image/object/area' : _float_feature(object_areas),
-        'image/object/id' : _int64_feature(object_ids)
+        'image/object/id' : _bytes_feature(object_ids)
     }))
     return example
 
